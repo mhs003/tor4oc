@@ -1,0 +1,27 @@
+{
+  "name": "tor4oc",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Persistent Tor tunnel for OpenCode sessions",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "^2.3.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tor",
+    "proxy",
+    "socks5"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
