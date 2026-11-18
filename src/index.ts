@@ -258,14 +258,14 @@ export default Plugin.define({
       TORCTL_HOME: state.home,
     }
 
-    await ctx.shell.hook("create.before", (event) => {
+    const hookReg = await ctx.shell.hook("create.before", (event) => {
       if (!state.inject) return
       if (!state.running) return
       Object.assign(event.env, proxyEnv)
     })
 
     // ---- tools ----
-    await ctx.tool.transform((editor) => {
+    const toolReg = await ctx.tool.transform((editor) => {
       editor.namespace({
         name: "tor",
         description: "Tor tunnel state and control for this session",
@@ -334,10 +334,13 @@ export default Plugin.define({
       })
     })
 
-    return () => {
-      // Intentionally leave tor running: other sessions and later server runs
-      // can reuse it. Stopping it is an explicit action, not a side effect of
-      // a plugin unload.
+    return async () => {
+      // Stop routing new commands, but leave tor running: the tunnel is a
+      // shared resource that other sessions and later server runs reuse.
+      // Stopping it is an explicit action, not a side effect of an unload.
+      state.inject = false
+      await hookReg.dispose()
+      await toolReg.dispose()
     }
   },
 })
