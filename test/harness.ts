@@ -127,6 +127,21 @@ async function main() {
   if (typeof status.content === "string" && status.content.includes("inject:")) ok("tor_status reports state")
   else bad("tor_status content malformed")
 
+  // A tunnel we did not start (no pidfile, no cookie) must report itself as
+  // adopted and must explain why rotate cannot work instead of failing quietly.
+  if (typeof status.content === "string" && status.content.includes("owner:    adopted"))
+    ok("owner reported as adopted when no pidfile exists")
+  else bad(`owner line: ${JSON.stringify(status.content)}`)
+
+  const rot = await tools["tor_rotate"]({})
+  const text = String(rot.content ?? "")
+  if (
+    text.startsWith("rotate failed: control port") ||
+    text.startsWith("rotate failed: cannot read control cookie")
+  )
+    ok("rotate failure names its cause")
+  else bad(`rotate message: ${text}`)
+
   // -- dispose ------------------------------------------------------------
   await dispose?.()
   if (hooks["create.before"] === undefined) ok("dispose: hook unregistered")

@@ -43,6 +43,7 @@ type State = {
   autoStart: boolean
   inject: boolean
   running: boolean
+  adopted: boolean
   exitIP: string | null
   isTor: boolean
   lastError: string | null
@@ -122,8 +123,7 @@ function sendControl(port: number, payload: string): Promise<boolean> {
   })
 }
 
-async function readExit(state: State): Promise<{ ip: string | null; isTor: boolean }> {
-  const r = await sh(
+async function readExit(state: State): Promise<{ ip: string | null; isTor: boolean }> {  const r = await sh(
     "curl",
     [
       "-sS",
@@ -144,6 +144,25 @@ async function readExit(state: State): Promise<{ ip: string | null; isTor: boole
   }
 }
 
+// True when the pid in our pidfile is a live process, i.e. the tunnel on the
+// port is one this plugin started and whose cookie lives in our home.
+async function pidAlive(pidfile: string): Promise<boolean> {
+  let raw: string
+  try {
+    raw = await readFile(pidfile, "utf8")
+  } catch {
+    return false
+  }
+  const pid = Number.parseInt(raw.trim(), 10)
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export default Plugin.define({
   id: "tor",
 
@@ -157,6 +176,7 @@ export default Plugin.define({
       autoStart: opts.autoStart !== false,
       inject: opts.inject !== false,
       running: false,
+      adopted: false,
       exitIP: null,
       isTor: false,
       lastError: null,
@@ -166,9 +186,16 @@ export default Plugin.define({
     const cookie = `${state.home}/data/control_auth_cookie`
     const pidfile = `${state.home}/tor.pid`
 
+    const ownsTunnel = () => pidAlive(pidfile)
+
     async function start(): Promise<string> {
       if (await portOpen(state.socksPort)) {
+        // Something is already listening. It may be a tunnel this plugin
+        // started earlier in the same server run (the plugin can be set up
+        // more than once), or a stranger. Our pidfile tells them apart:
+        // a live process at that pid means the cookie in our home is valid.
         state.running = true
+        state.adopted = !(await ownsTunnel())
         return "already listening"
       }
 
@@ -207,23 +234,34 @@ export default Plugin.define({
       }
 
       state.running = await portOpen(state.socksPort)
+      state.adopted = false
       return state.running ? "started" : "failed to bootstrap"
     }
 
-    async function rotate(): Promise<boolean> {
+    async function rotate(): Promise<{ ok: boolean; reason?: string }> {
+      if (!(await portOpen(state.ctrlPort))) {
+        return { ok: false, reason: `control port 127.0.0.1:${state.ctrlPort} is closed` }
+      }
+
       let raw: Buffer
       try {
         await access(cookie, constants.R_OK)
         raw = await readFile(cookie)
       } catch {
-        return false
+        // The cookie path comes from our config; the tor answering on the port
+        // may be a different instance entirely (adopted, or a leftover whose
+        // data directory was removed). Say so instead of a vague failure.
+        return {
+          ok: false,
+          reason: `cannot read control cookie at ${cookie} — the tor on port ${state.socksPort} was not started by this plugin`,
+        }
       }
 
       const hex = raw.toString("hex")
       const ok = await sendControl(state.ctrlPort, `AUTHENTICATE ${hex}\r\nSIGNAL NEWNYM\r\nQUIT\r\n`)
-      if (!ok) return false
+      if (!ok) return { ok: false, reason: `control connection to 127.0.0.1:${state.ctrlPort} failed` }
       await sleep(1200)
-      return true
+      return { ok: true }
     }
 
     async function refresh() {
@@ -285,6 +323,7 @@ export default Plugin.define({
             `control:  127.0.0.1:${state.ctrlPort}`,
             `home:     ${state.home}`,
             `inject:   ${state.inject ? "on" : "off"}`,
+            `owner:    ${state.adopted ? "adopted (not started by this plugin)" : "this plugin"}`,
             `exit ip:  ${state.exitIP ?? "<none>"}`,
             `is tor:   ${state.isTor ? "yes" : "no"}`,
             `boot:     ${bootResult}`,
@@ -301,8 +340,8 @@ export default Plugin.define({
         input: { type: "object", properties: {}, additionalProperties: false },
         options: { namespace: "tor" },
         execute: async () => {
-          const ok = await rotate()
-          if (!ok) return { content: "rotate failed: control port or cookie unavailable" }
+          const r = await rotate()
+          if (!r.ok) return { content: `rotate failed: ${r.reason}` }
           await refresh()
           return { content: `new circuit\n${state.exitIP ?? "<no exit>"} (isTor: ${state.isTor})` }
         },
