@@ -31,7 +31,15 @@ import { join } from "node:path"
  *   ctrlPort    number  default 9051
  *   home        string  default ~/.cache/torctl
  *   autoStart   boolean default true — spawn tor if it is not already up
- *   inject      boolean default true — proxy env into shell commands
+ *   inject      boolean default false — proxy env into shell commands
+ *
+ * `inject` defaults to off. Turning it on moves every shell command in the
+ * server through tor, which is rarely what you want for unrelated work in the
+ * same session. Say what you mean: `tor_on` for the run, or `inject: true` in
+ * options for a dedicated session.
+ *
+ * Only shell commands are covered. The provider client that talks to the model
+ * API does not follow a socks proxy, so keep this off unless you intend it.
  */
 
 const LOOPBACK_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
@@ -174,7 +182,7 @@ export default Plugin.define({
       ctrlPort: typeof opts.ctrlPort === "number" ? opts.ctrlPort : 9051,
       home: expandHome(typeof opts.home === "string" ? opts.home : "~/.cache/torctl"),
       autoStart: opts.autoStart !== false,
-      inject: opts.inject !== false,
+      inject: opts.inject === true,
       running: false,
       adopted: false,
       exitIP: null,
