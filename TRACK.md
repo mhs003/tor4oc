@@ -137,6 +137,16 @@ server, because `NO_PROXY` covers loopback and RFC1918.
 - **Use a local model for smoke tests.** `collab-ollama/*` needs no credits and
   drives tool calls fine.
 
+### Provider traffic stays direct
+
+Turning injection on reroutes shell commands only. The model client is a
+separate HTTP stack that cannot speak `socks5h`, so the provider API hosts are
+listed in `NO_PROXY`. Without that, the first turn after enabling the plugin
+fails with `UnsupportedProxyProtocol` and retries until it gives up.
+
+Verified: with injection on by default, a session both reached its API and
+returned `{"IsTor":true,"IP":"185.246.190.83"}` from a shell command.
+
 ---
 
 ## Open questions

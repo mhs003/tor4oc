@@ -76,7 +76,7 @@ git clone https://github.com/mhs003/tor4oc .opencode/plugins/tor4oc
 | `ctrlPort` | `9051` | control port for circuit rotation |
 | `home` | `~/.cache/torctl` | torrc, data dir, control cookie, pidfile |
 | `autoStart` | `true` | spawn tor if nothing is listening |
-| `inject` | `true` | inject proxy env into shell commands |
+| `inject` | `true` | inject proxy env into shell commands (provider API hosts excluded) |
 
 <br>
 
@@ -88,12 +88,18 @@ Every shell command receives:
 ALL_PROXY / all_proxy        socks5h://127.0.0.1:<port>
 HTTP_PROXY / http_proxy      socks5h://127.0.0.1:<port>
 HTTPS_PROXY / https_proxy    socks5h://127.0.0.1:<port>
-NO_PROXY / no_proxy          loopback + RFC1918
+NO_PROXY / no_proxy          loopback + RFC1918 + provider API hosts
 ```
 
 `socks5h` rather than `socks5` matters — plain `socks5` resolves DNS locally and leaks the hostname before the request leaves.
 
 `NO_PROXY` keeps local services reachable, so `curl http://127.0.0.1:8000` still works.
+
+It also covers the model API hosts. OpenCode's provider client is a separate
+HTTP stack that cannot speak a socks proxy; without that exclusion, the first
+turn after enabling the plugin fails with `UnsupportedProxyProtocol`. Model
+traffic stays direct, shell commands go through Tor. If your provider is not on
+the built-in list, add its host or it will break.
 
 <br>
 
