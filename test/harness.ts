@@ -147,14 +147,12 @@ async function main() {
   if (hooks["create.before"] === undefined) ok("dispose: hook unregistered")
   else bad("dispose: hook still registered after dispose")
 
-  // -- default: inject is off unless asked for -----------------------------
+  // -- provider hosts must never be tunnelled ------------------------------
   {
-    const offHome = mkdtempSync(join(tmpdir(), "tor4oc-default-"))
     const h: Record<string, HookFn> = {}
-    const t: Record<string, Execute> = {}
     const c = {
       app: { version: "harness" },
-      options: { home: offHome, socksPort: SOCKS, ctrlPort: CTRL, autoStart: false },
+      options: { home: mkdtempSync(join(tmpdir(), "tor4oc-np-")), socksPort: SOCKS, ctrlPort: CTRL, autoStart: false },
       shell: {
         hook: async (n: string, fn: HookFn) => {
           h[n] = fn
@@ -164,39 +162,32 @@ async function main() {
       tool: {
         transform: async (cb: (e: unknown) => void) => {
           let p = ""
+          const t: Record<string, Execute> = {}
           cb({
-            namespace: (n: { name: string }) => {
-              p = n.name + "_"
-            },
-            add: (x: { name: string; execute: Execute }) => {
-              t[p + x.name] = x.execute
-            },
+            namespace: (n: { name: string }) => { p = n.name + "_" },
+            add: (x: { name: string; execute: Execute }) => { t[p + x.name] = x.execute },
           })
+          ;(c as any).__tools = t
           return { dispose: async () => {} }
         },
       },
     }
     const d = await plugin.setup(c as never)
-    const srv2 = createServer((s) => s.end())
-    await new Promise<void>((r) => srv2.listen(SOCKS, "127.0.0.1", () => r()))
-
-    // At load time, with no tor_on call, nothing is injected even though a
-    // tunnel exists — the default is off.
+    const srv3 = createServer((x) => x.end())
+    await new Promise<void>((r) => srv3.listen(SOCKS, "127.0.0.1", () => r()))
+    await (c as any).__tools["tor_status"]({}) // refresh so state knows the port is up
     const env: Env = {}
-    await t["tor_status"]({}) // makes the port known as up without touching inject
-    await h["create.before"]?.({ command: "curl x", cwd: offHome, timeout: 1000, shell: "bash", env })
-    if (env.ALL_PROXY === undefined) ok("default inject=false: nothing injected at load time")
-    else bad(`default inject=false: ALL_PROXY=${env.ALL_PROXY}`)
-
-    // tor_on is the explicit opt-in for the run, and it must work.
-    await t["tor_on"]({})
-    const env2: Env = {}
-    await h["create.before"]?.({ command: "curl x", cwd: offHome, timeout: 1000, shell: "bash", env: env2 })
-    if (env2.ALL_PROXY === `socks5h://127.0.0.1:${SOCKS}`) ok("tor_on opts in even when the default is off")
-    else bad(`tor_on after default-off: ALL_PROXY=${env2.ALL_PROXY}`)
-
-    srv2.close()
+    // port is up, inject defaults on: the hook should fire
+    await h["create.before"]?.({ command: "curl x", cwd: c.options.home, timeout: 1000, shell: "bash", env })
+    srv3.close()
     await d?.()
+    const np = String(env.NO_PROXY ?? "")
+    if (env.ALL_PROXY) ok("default inject: on with a live tunnel")
+    else bad("default inject: nothing injected")
+    if (np.includes("api.river.ai")) ok("NO_PROXY excludes provider API host")
+    else bad(`NO_PROXY = ${np}`)
+    if (np.includes("127.0.0.1")) ok("NO_PROXY still covers loopback")
+    else bad(`NO_PROXY lacks loopback: ${np}`)
   }
 
   console.log(results.join("\n"))

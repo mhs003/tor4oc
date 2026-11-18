@@ -31,18 +31,29 @@ import { join } from "node:path"
  *   ctrlPort    number  default 9051
  *   home        string  default ~/.cache/torctl
  *   autoStart   boolean default true — spawn tor if it is not already up
- *   inject      boolean default false — proxy env into shell commands
+ *   inject      boolean default true — proxy env into shell commands
  *
- * `inject` defaults to off. Turning it on moves every shell command in the
- * server through tor, which is rarely what you want for unrelated work in the
- * same session. Say what you mean: `tor_on` for the run, or `inject: true` in
- * options for a dedicated session.
- *
- * Only shell commands are covered. The provider client that talks to the model
- * API does not follow a socks proxy, so keep this off unless you intend it.
+ * The provider client that talks to the model API is a separate HTTP stack and
+ * cannot speak a socks proxy. Rather than let it fail, the API hosts are added
+ * to NO_PROXY so model traffic stays direct while shell commands are tunnelled.
  */
 
 const LOOPBACK_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+// Hosts OpenCode itself talks to. These must never go through the socks proxy:
+// the client speaking to them does not support socks and will fail the turn.
+const PROVIDER_NO_PROXY = [
+  "api.river.ai",
+  "api.openrouter.ai",
+  "openrouter.ai",
+  "api.anthropic.com",
+  "api.openai.com",
+  "generativelanguage.googleapis.com",
+  "api.deepseek.com",
+  "api.mistral.ai",
+  "api.groq.com",
+  "localhost",
+].join(",")
 
 type State = {
   socksPort: number
@@ -182,7 +193,7 @@ export default Plugin.define({
       ctrlPort: typeof opts.ctrlPort === "number" ? opts.ctrlPort : 9051,
       home: expandHome(typeof opts.home === "string" ? opts.home : "~/.cache/torctl"),
       autoStart: opts.autoStart !== false,
-      inject: opts.inject === true,
+      inject: opts.inject !== false,
       running: false,
       adopted: false,
       exitIP: null,
@@ -297,8 +308,8 @@ export default Plugin.define({
       http_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
       HTTPS_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
       https_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
-      NO_PROXY: LOOPBACK_NO_PROXY,
-      no_proxy: LOOPBACK_NO_PROXY,
+      NO_PROXY: `${LOOPBACK_NO_PROXY},${PROVIDER_NO_PROXY}`,
+      no_proxy: `${LOOPBACK_NO_PROXY},${PROVIDER_NO_PROXY}`,
       TORCTL_SOCKS_PORT: String(state.socksPort),
       TORCTL_CTRL_PORT: String(state.ctrlPort),
       TORCTL_HOME: state.home,
