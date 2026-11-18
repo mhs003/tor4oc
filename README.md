@@ -8,8 +8,8 @@ https://github.com/mhs003/tor4oc
 
 <br>
 
-> **Status: functional core, not yet verified end-to-end.**
-> The auto-start path has never executed, because testing kept hitting an existing tunnel on the default port. See [`TRACK.md`](TRACK.md) for what is proven and what is not.
+> **Status: verified end-to-end.**
+> A real session was observed leaving through the tunnel with no wrapper, rotating its exit, and toggling injection off and on. See [`TRACK.md`](TRACK.md) for the evidence and for what is still open.
 
 <br>
 
@@ -103,12 +103,18 @@ Four tools appear under the `tor` namespace:
 
 | tool | does |
 |---|---|
-| `tor_status` | tunnel state, exit IP, whether egress is really Tor |
+| `tor_status` | tunnel state, exit IP, whether egress is really Tor, and who started the tunnel |
 | `tor_rotate` | new circuit, so the next requests leave from a different exit |
 | `tor_off` | stop injecting the proxy for the rest of the server run |
 | `tor_on` | resume injecting |
 
 Model-facing descriptions tell it when to reach for each.
+
+`tor_status` reports `owner: this plugin` when the plugin started the tunnel, or
+`owner: adopted (not started by this plugin)` when it found one already
+listening. An adopted tunnel still carries traffic, but rotation cannot work
+against it — it needs a control cookie the plugin can read. `tor_rotate` says so
+rather than failing quietly.
 
 <br>
 
@@ -144,9 +150,24 @@ If direct works and tunnelled fails, it's the exit, not the target.
 ## Notes
 
 - Tor rate-limits circuit rotation to roughly one per 10 seconds. A rotation inside that window is queued, not rejected.
-- The tunnel is **not** stopped when the plugin unloads — it's shared across sessions and later server runs.
+- The tunnel is **not** stopped when the plugin unloads — it's shared across sessions and later server runs. The hook and tools are unregistered, so nothing keeps routing.
 - Provider traffic (model API calls) is untouched. This covers shell commands only.
-- Don't `pkill -f tor`. Use the pidfile in `home`.
+- Don't `pkill -f tor` — the pattern matches the shell running the command. Use the pidfile in `home`, or a pid from `ps`.
+
+<br>
+
+## Tests
+
+The plugin's logic can be checked without a server or a tor instance:
+
+```bash
+node --experimental-strip-types test/harness.ts
+```
+
+It drives the real `setup()` with a fake context and asserts the injected
+environment, the toggle, the ownership line, and cleanup. `AGENTS.md` covers
+the two further layers — proving the plugin loads in a live server, and proving
+a model's command really leaves through the tunnel.
 
 <br>
 
