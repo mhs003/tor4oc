@@ -31,29 +31,24 @@ import { join } from "node:path"
  *   ctrlPort    number  default 9051
  *   home        string  default ~/.cache/torctl
  *   autoStart   boolean default true — spawn tor if it is not already up
- *   inject      boolean default true — proxy env into shell commands
+ *   inject      boolean default false — proxy env into shell commands
+ *
+ * Off by default: installing the plugin should not quietly reroute unrelated
+ * work. Turn it on with tor_on for a session, or inject: true for a project
+ * whose every command should leave through tor.
  *
  * The provider client that talks to the model API is a separate HTTP stack and
- * cannot speak a socks proxy. Rather than let it fail, the API hosts are added
- * to NO_PROXY so model traffic stays direct while shell commands are tunnelled.
+ * cannot speak a socks proxy. Its hosts are read from the server's provider
+ * records and added to NO_PROXY, so model traffic stays direct even while
+ * shell commands are tunnelled.
  */
 
 const LOOPBACK_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 // Hosts OpenCode itself talks to. These must never go through the socks proxy:
-// the client speaking to them does not support socks and will fail the turn.
-const PROVIDER_NO_PROXY = [
-  "api.river.ai",
-  "api.openrouter.ai",
-  "openrouter.ai",
-  "api.anthropic.com",
-  "api.openai.com",
-  "generativelanguage.googleapis.com",
-  "api.deepseek.com",
-  "api.mistral.ai",
-  "api.groq.com",
-  "localhost",
-].join(",")
+// Nothing vendor-specific is listed. Hosts are read from the provider records
+// the server already holds, so a new or self-hosted provider is covered without
+// editing this file.
 
 type State = {
   socksPort: number
@@ -182,6 +177,30 @@ async function pidAlive(pidfile: string): Promise<boolean> {
   }
 }
 
+// Every host the model client might talk to, taken from the provider records
+// rather than from a list maintained by hand. A custom or newly added provider
+// is excluded automatically, which is the only way this stays correct.
+function providerHosts(records: readonly unknown[]): string[] {
+  const hosts = new Set<string>()
+  for (const rec of records) {
+    // Records arrive in two shapes: the client returns the provider itself,
+    // while the editor wraps it as { provider }. Accept both.
+    const r = rec as { settings?: unknown; provider?: { settings?: unknown } } | undefined
+    const settings = (r?.settings ?? r?.provider?.settings) as { baseURL?: unknown } | undefined
+    const base = settings?.baseURL
+    if (typeof base !== "string") continue
+    try {
+      const h = new URL(base).hostname
+      // baseURLs may contain template placeholders like ${databricks_host};
+      // those are not real hosts and must not end up in NO_PROXY.
+      if (h && !h.includes("$") && !h.includes("{")) hosts.add(h)
+    } catch {
+      // A baseURL that will not parse is the provider client's problem, not ours.
+    }
+  }
+  return [...hosts]
+}
+
 export default Plugin.define({
   id: "tor",
 
@@ -193,7 +212,7 @@ export default Plugin.define({
       ctrlPort: typeof opts.ctrlPort === "number" ? opts.ctrlPort : 9051,
       home: expandHome(typeof opts.home === "string" ? opts.home : "~/.cache/torctl"),
       autoStart: opts.autoStart !== false,
-      inject: opts.inject !== false,
+      inject: opts.inject === true,
       running: false,
       adopted: false,
       exitIP: null,
@@ -301,6 +320,17 @@ export default Plugin.define({
     if (state.running) await refresh()
 
     // ---- shell hook: every command in every session goes through tor ----
+    // Provider hosts are read once at load. ctx.provider is not consulted per
+    // command; the hook must stay cheap.
+    let providerList: readonly unknown[] = []
+    try {
+      const out = await ctx.provider.list()
+      providerList = (Array.isArray(out) ? out : (out as { data?: unknown }).data ?? []) as typeof providerList
+    } catch {
+      state.lastError = "could not read provider records; falling back to loopback-only NO_PROXY"
+    }
+    const noProxy = [LOOPBACK_NO_PROXY, ...providerHosts(providerList)].join(",")
+
     const proxyEnv: Record<string, string> = {
       ALL_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
       all_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
@@ -308,8 +338,8 @@ export default Plugin.define({
       http_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
       HTTPS_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
       https_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
-      NO_PROXY: `${LOOPBACK_NO_PROXY},${PROVIDER_NO_PROXY}`,
-      no_proxy: `${LOOPBACK_NO_PROXY},${PROVIDER_NO_PROXY}`,
+      NO_PROXY: noProxy,
+      no_proxy: noProxy,
       TORCTL_SOCKS_PORT: String(state.socksPort),
       TORCTL_CTRL_PORT: String(state.ctrlPort),
       TORCTL_HOME: state.home,

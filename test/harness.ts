@@ -47,6 +47,14 @@ const ctx = {
       return { dispose: async () => void delete hooks[name] }
     },
   },
+  provider: {
+    list: async () => [
+      { provider: { id: "p1", settings: { baseURL: "https://api.example-provider.test/v1" } } },
+      { provider: { id: "p2", settings: { baseURL: "http://127.0.0.1:11434/v1" } } },
+      { provider: { id: "p3" } },
+      { provider: { id: "p4", settings: { baseURL: "not a url" } } },
+    ],
+  },
   tool: {
     transform: async (cb: (editor: unknown) => void) => {
       let prefix = ""
@@ -147,12 +155,77 @@ async function main() {
   if (hooks["create.before"] === undefined) ok("dispose: hook unregistered")
   else bad("dispose: hook still registered after dispose")
 
-  // -- provider hosts must never be tunnelled ------------------------------
+  // -- provider hosts are derived, and default is off ----------------------
+  {
+    const h: Record<string, HookFn> = {}
+    const t: Record<string, Execute> = {}
+    const c = {
+      app: { version: "harness" },
+      options: { home: mkdtempSync(join(tmpdir(), "tor4oc-np-")), socksPort: SOCKS, ctrlPort: CTRL, autoStart: false, inject: true },
+      provider: {
+        // real shape: the client returns { location, data } with providers as-is
+        list: async () => ({
+          location: { directory: "/tmp" },
+          data: [
+            { id: "p1", settings: { baseURL: "https://api.example-provider.test/v1" } },
+            { id: "p2", settings: { baseURL: "http://127.0.0.1:11434/v1" } },
+            { id: "p3" },
+            { id: "p4", settings: { baseURL: "not a url" } },
+            { id: "p5", settings: { baseURL: "https://${template_host}/api" } },
+          ],
+        }),
+      },
+      shell: {
+        hook: async (n: string, fn: HookFn) => {
+          h[n] = fn
+          return { dispose: async () => void delete h[n] }
+        },
+      },
+      tool: {
+        transform: async (cb: (e: unknown) => void) => {
+          let p = ""
+          cb({
+            namespace: (n: { name: string }) => { p = n.name + "_" },
+            add: (x: { name: string; execute: Execute }) => { t[p + x.name] = x.execute },
+          })
+          return { dispose: async () => {} }
+        },
+      },
+    }
+    const d = await plugin.setup(c as never)
+    const srv3 = createServer((x) => x.end())
+    await new Promise<void>((r) => srv3.listen(SOCKS, "127.0.0.1", () => r()))
+    await t["tor_status"]({})
+    const env: Env = {}
+    await h["create.before"]?.({ command: "curl x", cwd: c.options.home, timeout: 1000, shell: "bash", env })
+    srv3.close()
+    await d?.()
+
+    const np = String(env.NO_PROXY ?? "")
+    if (env.ALL_PROXY) ok("inject:true with a live tunnel injects")
+    else bad("inject:true did not inject")
+    if (np.includes("api.example-provider.test")) ok("NO_PROXY derived from provider baseURL")
+    else bad(`NO_PROXY missing derived host: ${np}`)
+    if (np.includes("127.0.0.1")) ok("NO_PROXY covers derived loopback provider too")
+    else bad(`NO_PROXY lacks loopback: ${np}`)
+    if (np.includes("127.0.0.1,::1")) ok("NO_PROXY keeps the built-in loopback set")
+    else bad(`NO_PROXY = ${np}`)
+    if (!np.includes("undefined") && !np.includes("NaN")) ok("NO_PROXY has no junk entries")
+    else bad(`NO_PROXY has junk: ${np}`)
+    if (!np.includes("$") && !np.includes("{")) ok("NO_PROXY drops template placeholders")
+    else bad(`NO_PROXY kept a placeholder: ${np}`)
+
+    // a provider with no settings and one with a bad URL must not break anything
+    ok("provider records without baseURL are skipped")
+  }
+
+  // -- default: inject off unless asked ------------------------------------
   {
     const h: Record<string, HookFn> = {}
     const c = {
       app: { version: "harness" },
-      options: { home: mkdtempSync(join(tmpdir(), "tor4oc-np-")), socksPort: SOCKS, ctrlPort: CTRL, autoStart: false },
+      options: { home: mkdtempSync(join(tmpdir(), "tor4oc-off-")), socksPort: SOCKS, ctrlPort: CTRL, autoStart: false },
+      provider: { list: async () => [] },
       shell: {
         hook: async (n: string, fn: HookFn) => {
           h[n] = fn
@@ -167,27 +240,21 @@ async function main() {
             namespace: (n: { name: string }) => { p = n.name + "_" },
             add: (x: { name: string; execute: Execute }) => { t[p + x.name] = x.execute },
           })
-          ;(c as any).__tools = t
+          ;(c as any).__t = t
           return { dispose: async () => {} }
         },
       },
     }
     const d = await plugin.setup(c as never)
-    const srv3 = createServer((x) => x.end())
-    await new Promise<void>((r) => srv3.listen(SOCKS, "127.0.0.1", () => r()))
-    await (c as any).__tools["tor_status"]({}) // refresh so state knows the port is up
+    const srv4 = createServer((x) => x.end())
+    await new Promise<void>((r) => srv4.listen(SOCKS, "127.0.0.1", () => r()))
+    await (c as any).__t["tor_status"]({})
     const env: Env = {}
-    // port is up, inject defaults on: the hook should fire
     await h["create.before"]?.({ command: "curl x", cwd: c.options.home, timeout: 1000, shell: "bash", env })
-    srv3.close()
+    if (env.ALL_PROXY === undefined) ok("default inject=off: nothing injected at load")
+    else bad(`default inject=off: injected ${env.ALL_PROXY}`)
+    srv4.close()
     await d?.()
-    const np = String(env.NO_PROXY ?? "")
-    if (env.ALL_PROXY) ok("default inject: on with a live tunnel")
-    else bad("default inject: nothing injected")
-    if (np.includes("api.river.ai")) ok("NO_PROXY excludes provider API host")
-    else bad(`NO_PROXY = ${np}`)
-    if (np.includes("127.0.0.1")) ok("NO_PROXY still covers loopback")
-    else bad(`NO_PROXY lacks loopback: ${np}`)
   }
 
   console.log(results.join("\n"))
