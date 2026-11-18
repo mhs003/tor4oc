@@ -32,6 +32,7 @@ import { join } from "node:path"
  *   home        string  default ~/.cache/torctl
  *   autoStart   boolean default true — spawn tor if it is not already up
  *   inject      boolean default false — proxy env into shell commands
+ *   noProxy     string  extra hosts to keep off the tunnel, comma separated
  *
  * Off by default: installing the plugin should not quietly reroute unrelated
  * work. Turn it on with tor_on for a session, or inject: true for a project
@@ -320,35 +321,60 @@ export default Plugin.define({
     if (state.running) await refresh()
 
     // ---- shell hook: every command in every session goes through tor ----
-    // Provider hosts are read once at load. ctx.provider is not consulted per
-    // command; the hook must stay cheap.
-    let providerList: readonly unknown[] = []
-    try {
-      const out = await ctx.provider.list()
-      providerList = (Array.isArray(out) ? out : (out as { data?: unknown }).data ?? []) as typeof providerList
-    } catch {
-      state.lastError = "could not read provider records; falling back to loopback-only NO_PROXY"
-    }
-    const noProxy = [LOOPBACK_NO_PROXY, ...providerHosts(providerList)].join(",")
+    // NO_PROXY must cover every provider host, or a model turn fails with
+    // UnsupportedProxyProtocol. The provider records are not reliably populated
+    // at load time, so the list is refreshed on a timer and re-read per command
+    // when it goes stale. Anything still missed can be named in `noProxy`.
+    let providerHostsNow: string[] = []
+    let lastProviderRead = 0
 
-    const proxyEnv: Record<string, string> = {
-      ALL_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
-      all_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
-      HTTP_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
-      http_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
-      HTTPS_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
-      https_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
-      NO_PROXY: noProxy,
-      no_proxy: noProxy,
-      TORCTL_SOCKS_PORT: String(state.socksPort),
-      TORCTL_CTRL_PORT: String(state.ctrlPort),
-      TORCTL_HOME: state.home,
+    const readProviders = async () => {
+      try {
+        const out = await ctx.provider.list()
+        const list = (Array.isArray(out) ? out : ((out as { data?: unknown }).data ?? [])) as readonly unknown[]
+        providerHostsNow = providerHosts(list)
+        lastProviderRead = Date.now()
+      } catch {
+        // Keep whatever we had: a transient failure must not widen the tunnel.
+      }
     }
+
+    await readProviders()
+
+    const explicitNoProxy = (typeof opts.noProxy === "string" ? opts.noProxy : "")
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean)
+
+    const makeProxyEnv = (): Record<string, string> => {
+      const noProxy = [LOOPBACK_NO_PROXY, ...explicitNoProxy, ...providerHostsNow].filter(Boolean).join(",")
+      return {
+        ALL_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
+        all_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
+        HTTP_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
+        http_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
+        HTTPS_PROXY: `socks5h://127.0.0.1:${state.socksPort}`,
+        https_proxy: `socks5h://127.0.0.1:${state.socksPort}`,
+        NO_PROXY: noProxy,
+        no_proxy: noProxy,
+        TORCTL_SOCKS_PORT: String(state.socksPort),
+        TORCTL_CTRL_PORT: String(state.ctrlPort),
+        TORCTL_HOME: state.home,
+      }
+    }
+
+    // A provider can appear long after load (credentials, dynamic discovery).
+    const providerTimer = setInterval(() => {
+      if (state.inject) void readProviders()
+    }, 30_000)
+    providerTimer.unref?.()
 
     const hookReg = await ctx.shell.hook("create.before", (event) => {
       if (!state.inject) return
       if (!state.running) return
-      Object.assign(event.env, proxyEnv)
+      // Stale list? Refresh before handing a command an incomplete NO_PROXY.
+      if (Date.now() - lastProviderRead > 60_000) void readProviders()
+      Object.assign(event.env, makeProxyEnv())
     })
 
     // ---- tools ----
@@ -427,6 +453,7 @@ export default Plugin.define({
       // shared resource that other sessions and later server runs reuse.
       // Stopping it is an explicit action, not a side effect of an unload.
       state.inject = false
+      clearInterval(providerTimer)
       await hookReg.dispose()
       await toolReg.dispose()
     }

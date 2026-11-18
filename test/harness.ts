@@ -224,7 +224,7 @@ async function main() {
     const h: Record<string, HookFn> = {}
     const c = {
       app: { version: "harness" },
-      options: { home: mkdtempSync(join(tmpdir(), "tor4oc-off-")), socksPort: SOCKS, ctrlPort: CTRL, autoStart: false },
+      options: { home: mkdtempSync(join(tmpdir(), "tor4oc-off-")), socksPort: SOCKS, ctrlPort: CTRL, autoStart: false, noProxy: "extra-one.test, extra-two.test" },
       provider: { list: async () => [] },
       shell: {
         hook: async (n: string, fn: HookFn) => {
@@ -253,6 +253,14 @@ async function main() {
     await h["create.before"]?.({ command: "curl x", cwd: c.options.home, timeout: 1000, shell: "bash", env })
     if (env.ALL_PROXY === undefined) ok("default inject=off: nothing injected at load")
     else bad(`default inject=off: injected ${env.ALL_PROXY}`)
+
+    // noProxy is honoured once injection is on
+    await (c as any).__t?.["tor_on"]?.({})
+    const env2: Env = {}
+    await h["create.before"]?.({ command: "curl x", cwd: c.options.home, timeout: 1000, shell: "bash", env: env2 })
+    const np2 = String(env2.NO_PROXY ?? "")
+    if (np2.includes("extra-one.test") && np2.includes("extra-two.test")) ok("noProxy option adds explicit hosts")
+    else bad(`noProxy not applied: ${JSON.stringify(np2)}`)
     srv4.close()
     await d?.()
   }

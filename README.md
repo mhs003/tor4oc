@@ -77,6 +77,7 @@ git clone https://github.com/mhs003/tor4oc .opencode/plugins/tor4oc
 | `home` | `~/.cache/torctl` | torrc, data dir, control cookie, pidfile |
 | `autoStart` | `true` | spawn tor if nothing is listening |
 | `inject` | `false` | inject proxy env into shell commands (provider API hosts excluded) |
+| `noProxy` | — | extra hosts to keep off the tunnel, comma separated |
 
 <br>
 
@@ -95,8 +96,9 @@ NO_PROXY / no_proxy          loopback + RFC1918 + provider API hosts
 
 `NO_PROXY` keeps local services reachable, so `curl http://127.0.0.1:8000` still works.
 
-It also covers the model API hosts, read at load from the server's own provider
-records — no vendor list to maintain. OpenCode's provider client is a separate
+It also covers the model API hosts, read from the server's own provider records
+— no vendor list to maintain. The list is refreshed periodically, because a
+provider is not always registered when the plugin starts. OpenCode's provider client is a separate
 HTTP stack that cannot speak a socks proxy; without the exclusion, a turn fails
 with `UnsupportedProxyProtocol`. Model traffic stays direct, shell commands go
 through Tor.

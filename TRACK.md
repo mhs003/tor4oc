@@ -162,10 +162,10 @@ list.
 
 ## Open questions
 
-1. **Provider hosts are snapshotted at load.** The list is read once in
-   `setup()`. A provider added mid-session — by an MCP server or a config reload
-   — is not in `NO_PROXY`, and its turns would fail while injection is on. The
-   hook stays cheap on purpose, so making this live needs care.
+1. **`NO_PROXY` can still miss a provider.** The list is refreshed every 30s
+   while injecting and re-read per command when older than a minute, but a
+   provider appearing and a command running inside that window is still
+   tunnelled. `noProxy` is the escape hatch.
 2. **Adopting a stranger's tunnel is still allowed.** If something else holds
    the SOCKS port, the plugin uses it and says so. That is a reasonable default
    (it keeps working), but a user who expects *their* tunnel should know that
