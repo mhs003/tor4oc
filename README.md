@@ -63,7 +63,7 @@ git clone https://github.com/mhs003/tor4oc .opencode/plugins/tor4oc
         "ctrlPort": 9051,
         "home": "~/.cache/torctl",
         "autoStart": true,
-        "inject": true
+        "inject": false
       }
     }
   ]
@@ -76,7 +76,7 @@ git clone https://github.com/mhs003/tor4oc .opencode/plugins/tor4oc
 | `ctrlPort` | `9051` | control port for circuit rotation |
 | `home` | `~/.cache/torctl` | torrc, data dir, control cookie, pidfile |
 | `autoStart` | `true` | spawn tor if nothing is listening |
-| `inject` | `true` | inject proxy env into shell commands (provider API hosts excluded) |
+| `inject` | `false` | inject proxy env into shell commands (provider API hosts excluded) |
 
 <br>
 
@@ -95,11 +95,15 @@ NO_PROXY / no_proxy          loopback + RFC1918 + provider API hosts
 
 `NO_PROXY` keeps local services reachable, so `curl http://127.0.0.1:8000` still works.
 
-It also covers the model API hosts. OpenCode's provider client is a separate
-HTTP stack that cannot speak a socks proxy; without that exclusion, the first
-turn after enabling the plugin fails with `UnsupportedProxyProtocol`. Model
-traffic stays direct, shell commands go through Tor. If your provider is not on
-the built-in list, add its host or it will break.
+It also covers the model API hosts, read at load from the server's own provider
+records — no vendor list to maintain. OpenCode's provider client is a separate
+HTTP stack that cannot speak a socks proxy; without the exclusion, a turn fails
+with `UnsupportedProxyProtocol`. Model traffic stays direct, shell commands go
+through Tor.
+
+Injection is **off by default**. Installing the plugin does not reroute
+anything: ask for `tor_on` in the session, or set `inject: true` for a project
+whose every command should leave through Tor.
 
 <br>
 

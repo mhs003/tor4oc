@@ -139,28 +139,43 @@ server, because `NO_PROXY` covers loopback and RFC1918.
 
 ### Provider traffic stays direct
 
-Turning injection on reroutes shell commands only. The model client is a
-separate HTTP stack that cannot speak `socks5h`, so the provider API hosts are
-listed in `NO_PROXY`. Without that, the first turn after enabling the plugin
-fails with `UnsupportedProxyProtocol` and retries until it gives up.
+Shell commands only. The model client is a separate HTTP stack that cannot
+speak `socks5h`, so its hosts must be excluded from the tunnel. The list is
+read at load from `ctx.provider.list()`, taking each provider's
+`settings.baseURL` hostname — a custom provider is covered without editing
+the plugin.
 
-Verified: with injection on by default, a session both reached its API and
-returned `{"IsTor":true,"IP":"185.246.190.83"}` from a shell command.
+Injection is off by default. Installing the plugin does not reroute unrelated
+work; `tor_on` (or `inject: true` in options) is the opt-in.
+
+Verified: with injection on, `NO_PROXY` listed `api.deepseek.com`,
+`openrouter.ai`, `agentrouter.org`, `api.tokenrouter.com`, `api.openai.com`
+and `opencode.ai`, and a shell command still returned
+`{"IsTor":true,"IP":"192.42.116.99"}`.
+
+Two response shapes had to be handled: the client returns providers directly
+inside `{ location, data }`, while the editor wraps them as `{ provider }`. A
+first attempt only handled the wrapped shape and silently produced an empty
+list.
 
 ---
 
 ## Open questions
 
-1. **Adopting a stranger's tunnel is still allowed.** If something else holds
+1. **Provider hosts are snapshotted at load.** The list is read once in
+   `setup()`. A provider added mid-session — by an MCP server or a config reload
+   — is not in `NO_PROXY`, and its turns would fail while injection is on. The
+   hook stays cheap on purpose, so making this live needs care.
+2. **Adopting a stranger's tunnel is still allowed.** If something else holds
    the SOCKS port, the plugin uses it and says so. That is a reasonable default
    (it keeps working), but a user who expects *their* tunnel should know that
    rotation will fail. Consider `strict: true` to refuse adoption.
-2. **`tor_off` / `tor_on` are not persisted.** They reset on server restart.
+3. **`tor_off` / `tor_on` are not persisted.** They reset on server restart.
    Intentional; the tool descriptions say "for the rest of this server run".
-3. **The plugin does not verify after a rotation that the new exit differs.**
+4. **The plugin does not verify after a rotation that the new exit differs.**
    Tor rate-limits NEWNYM, so a request inside the window is queued; a poll
    until the IP changes would be more honest than a fixed 1.2s sleep.
-4. **No Windows support tested.** The pid-liveness check uses
+5. **No Windows support tested.** The pid-liveness check uses
    `process.kill(pid, 0)`, which behaves differently there.
 
 ---
